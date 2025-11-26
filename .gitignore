@@ -1,0 +1,23 @@
+# 忽略前端冗余文件
+node_modules/
+edu_frontend/node_modules/
+edu_frontend/.env
+edu_frontend/.env.local
+edu_frontend/dist/
+edu_frontend/npm-debug.log*
+edu_frontend/.vscode/
+edu_frontend/Thumbs.db
+
+# 忽略后端冗余文件
+env/                  # 你的虚拟环境
+media/                # 上传文件存储
+db.sqlite3            # Django本地数据库（若存在）
+__pycache__/
+*.pyc
+*.pyo
+.vscode/
+
+# 通用忽略
+.DS_Store
+*.log
+*.tmp
