@@ -21,6 +21,8 @@
         <el-form-item class="login-btn-group">
           <el-button type="primary" @click="handleLogin" :loading="isLoading">登录</el-button>
           <el-button @click="resetForm">重置</el-button>
+          <!-- 新增：注册入口文本按钮（与原有按钮横向对齐，不破坏布局） -->
+          <el-button type="text" @click="goToRegister" style="color: #1989fa;">立即注册</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -96,6 +98,11 @@ const resetForm = () => {
   loginForm.username = '';
   loginForm.password = '';
 };
+
+// 新增：跳转注册页方法（最简逻辑，仅跳转路由）
+const goToRegister = () => {
+  router.push('/register');
+};
 </script>
 
 <style scoped>
@@ -124,5 +131,5 @@ const resetForm = () => {
   display: flex;
   justify-content: center;
   gap: 20px;
-}
+} 
 </style>
