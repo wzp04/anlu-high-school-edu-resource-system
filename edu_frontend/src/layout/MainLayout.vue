@@ -16,7 +16,8 @@
         <router-link to="/" class="nav-link" exact-active-class="active">
           首页
         </router-link>
-        <router-link to="/resources" class="nav-link" active-class="active">
+        <!-- 修改点：将“资源库”的跳转目标改为 ResourceList.vue 对应的路由name -->
+        <router-link :to="{ name: 'resourceList' }" class="nav-link" active-class="active">
           资源库
         </router-link>
         <router-link to="/upload" class="nav-link" active-class="active">

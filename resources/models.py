@@ -30,6 +30,16 @@ class Resource(models.Model):
     )
     created_time = models.DateTimeField(auto_now_add=True)
 
+    like_count = models.PositiveIntegerField(default=0, verbose_name="点赞数")  # 点赞功能
+    download_count = models.PositiveIntegerField(default=0, verbose_name="下载量")  # 统计下载次数
+    resource_type = models.CharField(max_length=20, default="other", verbose_name="资源类型", 
+                                    choices=[("ppt", "PPT"), ("word", "Word"), ("pdf", "PDF"), ("other", "其他")])  # 文件类型标识
+    preview_file = models.FileField(upload_to="previews/", null=True, blank=True, verbose_name="预览文件（PDF/图片）")  # 预览文件存储
+    usage_scenario = models.CharField(max_length=100, null=True, blank=True, verbose_name="使用场景")  # 教学场景说明
+    status_tag = models.CharField(max_length=20, default="normal", verbose_name="资源状态标签",
+                                 choices=[("normal", "正常"), ("to_fix", "待修正"), ("removed", "已下架")])  # 资源当前状态
+    is_high_quality = models.BooleanField(default=False, verbose_name="是否优质资源")  # 优质资源标签（用于首页轮播）
+
     def save(self, *args, **kwargs):
         # 生成文件MD5（仅当文件存在且MD5未生成时）
         if self.file and not self.md5:
@@ -38,6 +48,11 @@ class Resource(models.Model):
                 md5.update(chunk)
             self.md5 = md5.hexdigest()
         super().save(*args, **kwargs)
+
+    class Meta:
+        ordering = ["-created_time"]
+
+
 
 class UploadTask(models.Model):
     """记录分片上传任务的状态"""
@@ -62,3 +77,25 @@ class UploadTask(models.Model):
     class Meta:
         verbose_name = "分片上传任务"
         verbose_name_plural = verbose_name
+
+class Comment(models.Model):
+    resource = models.ForeignKey(Resource, on_delete=models.CASCADE, related_name="comments", verbose_name="关联资源")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="评论用户")
+    content = models.TextField(verbose_name="评论内容")
+    audit_status = models.CharField(max_length=20, default="pending", verbose_name="审核状态",
+                                   choices=[("pending", "待审核"), ("approved", "已通过"), ("rejected", "已驳回")])
+    created_time = models.DateTimeField(auto_now_add=True, verbose_name="评论时间")
+
+    class Meta:
+        ordering = ["-created_time"]
+
+class Feedback(models.Model):
+    resource = models.ForeignKey(Resource, on_delete=models.CASCADE, related_name="feedbacks", verbose_name="关联资源")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="反馈用户")
+    feedback_type = models.CharField(max_length=20, verbose_name="反馈类型",
+                                    choices=[("content_error", "内容错误"), ("format_error", "格式错误"), ("other", "其他问题")])
+    content = models.TextField(verbose_name="反馈内容")
+    created_time = models.DateTimeField(auto_now_add=True, verbose_name="反馈时间")
+
+    class Meta:
+        ordering = ["-created_time"]

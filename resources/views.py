@@ -9,10 +9,298 @@ from rest_framework import status, permissions
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
 
-from .models import Resource, UploadTask
-from .serializers import UploadTaskSerializer, ResourceSerializer
+from .models import Resource, UploadTask, Comment, Feedback
+from .serializers  import (
+    UploadTaskSerializer, ResourceSerializer,
+    ResourceListSerializer, ResourceDetailSerializer,
+    CommentSerializer, FeedbackSerializer
+)
 
 logger = logging.getLogger(__name__)
+
+# 1. 首页数据接口（轮播图+筛选选项+推荐资源）
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def home_page(request):
+    """
+    首页核心数据接口：返回轮播图（优质资源）、三级筛选选项、热门推荐资源
+    路径风格：符合现有 /api/xxx/ 规范，权限与原有接口一致（需登录）
+    """
+    try:
+        # 1. 轮播图数据：安陆一中+已通过审核+优质资源+正常状态（优先级最高）
+        carousel_resources = Resource.objects.filter(
+            school="安陆一中",
+            audit_status="approved",
+            is_high_quality=True,
+            status_tag="normal"
+        ).order_by("-created_time")[:5]  # 限制5条，避免轮播过长
+
+        # 2. 三级筛选选项（去重，保证前端筛选无重复值）
+        subjects = Resource.objects.filter(audit_status="approved", status_tag="normal").values_list("subject", flat=True).distinct()
+        grades = Resource.objects.filter(audit_status="approved", status_tag="normal").values_list("grade", flat=True).distinct()
+        schools = Resource.objects.filter(audit_status="approved", status_tag="normal").values_list("school", flat=True).distinct()
+
+        # 3. 热门推荐资源：已通过+正常状态+按下载量倒序（用户更关注热门资源）
+        recommended_resources = Resource.objects.filter(
+            audit_status="approved",
+            status_tag="normal"
+        ).order_by("-download_count")[:8]  # 限制8条，保证页面加载性能
+
+        # 序列化（用列表序列化器，字段精简，提升传输速度）
+        carousel_serializer = ResourceListSerializer(carousel_resources, many=True)
+        recommended_serializer = ResourceListSerializer(recommended_resources, many=True)
+
+        return Response({
+            "code": 200,
+            "message": "首页数据获取成功",
+            "data": {
+                "carousel_resources": carousel_serializer.data,  # 轮播图资源
+                "filter_options": {  # 三级筛选选项
+                    "subjects": list(subjects),
+                    "grades": list(grades),
+                    "schools": list(schools)
+                },
+                "recommended_resources": recommended_serializer.data  # 热门推荐
+            }
+        })
+    except Exception as e:
+        logger.error(f"首页数据获取失败：{str(e)}", exc_info=True)
+        return Response({
+            "code": 500,
+            "message": f"首页数据获取失败：{str(e)}"
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# 2. 资源列表接口（支持筛选+分页，用于资源列表页）
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def resource_list(request):
+    """
+    资源列表接口：支持按学科、年级、学校、优质资源筛选，带分页
+    路径风格：/api/resources/list/ 符合现有层级规范，与首页接口区分
+    """
+    # 1. 获取筛选参数（前端三级筛选传递的参数）
+    subject = request.query_params.get('subject')
+    grade = request.query_params.get('grade')
+    school = request.query_params.get('school')
+    is_high_quality = request.query_params.get('is_high_quality')  # 布尔值：true/false
+
+    # 2. 基础查询集：仅显示已通过审核+正常状态的资源（屏蔽待审核/驳回/下架资源）
+    queryset = Resource.objects.filter(
+        audit_status="approved",
+        status_tag="normal"
+    ).order_by("-created_time")  # 按上传时间倒序，最新资源在前
+
+    # 3. 应用筛选条件（参数存在时才筛选，支持多条件组合）
+    if subject:
+        queryset = queryset.filter(subject=subject)
+    if grade:
+        queryset = queryset.filter(grade=grade)
+    if school:
+        queryset = queryset.filter(school=school)
+    if is_high_quality in ["true", "True", "1"]:  # 兼容前端不同参数格式
+        queryset = queryset.filter(is_high_quality=True)
+
+    # 4. 分页（复用原有分页组件，保持分页格式一致）
+    paginator = PageNumberPagination()
+    paginated_queryset = paginator.paginate_queryset(queryset, request)
+
+    # 5. 序列化（列表页用精简序列化器）
+    serializer = ResourceListSerializer(paginated_queryset, many=True)
+    return paginator.get_paginated_response({
+        "code": 200,
+        "message": "资源列表获取成功",
+        "data": serializer.data
+    })
+
+# 3. 资源详情接口（含资源信息+已通过评论，用于详情页）
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def resource_detail(request, pk):
+    """
+    资源详情接口：返回资源完整信息+关联的已通过评论
+    路径风格：/api/resources/<int:pk>/ 符合RESTful规范，与现有ID参数传递一致
+    """
+    try:
+        # 1. 查询资源（仅显示已通过+正常状态，避免访问无效资源）
+        resource = Resource.objects.get(
+            id=pk,
+            audit_status="approved",
+            status_tag="normal"
+        )
+
+        # 2. 关联查询该资源的已通过评论（按评论时间倒序）
+        comments = Comment.objects.filter(
+            resource=resource,
+            audit_status="approved"
+        ).order_by("-created_time")[:10]  # 限制10条，避免评论过多影响加载
+
+        # 3. 序列化（详情页用完整序列化器，评论用评论序列化器）
+        resource_serializer = ResourceDetailSerializer(resource, context={"request": request})
+        comment_serializer = CommentSerializer(comments, many=True)
+
+        # 4. 下载量+1（仅统计有效访问，提升数据准确性）
+        resource.download_count += 1
+        resource.save()
+        logger.info(f"用户 {request.user.username} 访问资源详情：{resource.title}（ID：{pk}），下载量更新为 {resource.download_count}")
+
+        return Response({
+            "code": 200,
+            "message": "资源详情获取成功",
+            "data": {
+                "resource": resource_serializer.data,
+                "comments": comment_serializer.data  # 关联返回评论，减少前端请求次数
+            }
+        })
+    except Resource.DoesNotExist:
+        return Response({
+            "code": 404,
+            "message": "资源不存在或已下架"
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        logger.error(f"资源详情获取失败（ID：{pk}）：{str(e)}", exc_info=True)
+        return Response({
+            "code": 500,
+            "message": f"资源详情获取失败：{str(e)}"
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# 4. 评论提交接口（关联资源ID）
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def comment_submit(request, pk):
+    """
+    评论提交接口：关联指定资源，自动关联当前用户
+    路径风格：/api/resources/<int:pk>/comments/ 层级清晰，与详情接口关联
+    """
+    user = request.user
+    try:
+        # 1. 验证资源是否存在（仅允许对有效资源评论）
+        resource = Resource.objects.get(
+            id=pk,
+            audit_status="approved",
+            status_tag="normal"
+        )
+    except Resource.DoesNotExist:
+        return Response({
+            "code": 404,
+            "message": "资源不存在或已下架，无法评论"
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    # 2. 获取并验证评论内容
+    content = request.data.get('content')
+    if not content or content.strip() == "":
+        return Response({
+            "code": 400,
+            "message": "评论内容不能为空"
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # 3. 保存评论（自动关联用户、资源，审核状态默认待审核）
+    comment = Comment.objects.create(
+        resource=resource,
+        user=user,
+        content=content.strip(),
+        audit_status="pending"  # 评论需审核后才显示，避免垃圾评论
+    )
+    logger.info(f"用户 {user.username} 提交评论：资源ID {pk}，评论ID {comment.id}")
+
+    # 4. 序列化返回
+    serializer = CommentSerializer(comment)
+    return Response({
+        "code": 201,
+        "message": "评论提交成功，等待管理员审核",
+        "data": serializer.data
+    }, status=status.HTTP_201_CREATED)
+
+# 5. 纠错反馈提交接口（关联资源ID）
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def feedback_submit(request, pk):
+    """
+    纠错反馈提交接口：关联指定资源，支持反馈类型分类
+    路径风格：/api/resources/<int:pk>/feedbacks/ 与评论接口风格一致，便于前端记忆
+    """
+    user = request.user
+    try:
+        # 1. 验证资源是否存在
+        resource = Resource.objects.get(
+            id=pk,
+            audit_status="approved",
+            status_tag="normal"
+        )
+    except Resource.DoesNotExist:
+        return Response({
+            "code": 404,
+            "message": "资源不存在或已下架，无法提交反馈"
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    # 2. 获取并验证参数
+    feedback_type = request.data.get('feedback_type')
+    content = request.data.get('content')
+    if not feedback_type or feedback_type not in ["content_error", "format_error", "other"]:
+        return Response({
+            "code": 400,
+            "message": "反馈类型无效（仅支持 content_error/format_error/other）"
+        }, status=status.HTTP_400_BAD_REQUEST)
+    if not content or content.strip() == "":
+        return Response({
+            "code": 400,
+            "message": "反馈内容不能为空"
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # 3. 保存反馈
+    feedback = Feedback.objects.create(
+        resource=resource,
+        user=user,
+        feedback_type=feedback_type,
+        content=content.strip()
+    )
+    logger.info(f"用户 {user.username} 提交纠错反馈：资源ID {pk}，反馈ID {feedback.id}")
+
+    # 4. 序列化返回
+    serializer = FeedbackSerializer(feedback)
+    return Response({
+        "code": 201,
+        "message": "纠错反馈提交成功，我们会尽快处理",
+        "data": serializer.data
+    }, status=status.HTTP_201_CREATED)
+
+# 6. 资源点赞接口（切换点赞状态：点赞/取消点赞）
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def resource_like(request, pk):
+    """
+    资源点赞接口：支持点赞和取消点赞（单次请求切换状态）
+    路径风格：/api/resources/<int:pk>/like/ 符合动词+资源ID的规范，与现有操作接口一致
+    """
+    user = request.user
+    try:
+        # 1. 验证资源是否存在
+        resource = Resource.objects.get(
+            id=pk,
+            audit_status="approved",
+            status_tag="normal"
+        )
+    except Resource.DoesNotExist:
+        return Response({
+            "code": 404,
+            "message": "资源不存在或已下架，无法点赞"
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    # 2. 模拟点赞状态（因未建点赞关联表，简化为切换like_count；实际项目可新增Like模型记录用户-资源关联）
+    # 注：此处为简化方案，若需防止重复点赞，需新增Like模型（user+resource唯一约束）
+    resource.like_count += 1 if request.data.get('like', True) else -1
+    resource.like_count = max(0, resource.like_count)  # 确保点赞数不小于0
+    resource.save()
+
+    action = "点赞" if request.data.get('like', True) else "取消点赞"
+    logger.info(f"用户 {user.username} 对资源 {resource.title}（ID：{pk}）进行{action}，当前点赞数：{resource.like_count}")
+
+    return Response({
+        "code": 200,
+        "message": f"{action}成功",
+        "data": {
+            "like_count": resource.like_count
+        }
+    })
 
 # ========================================================
 #  功能：1. 个人资源管理（我的上传）列表接口
